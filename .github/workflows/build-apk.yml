@@ -3,12 +3,51 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Vendor official SheetJS standalone build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/assets
+          curl -fsSL --retry 3 --retry-all-errors \
+            https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js \
+            -o app/src/main/assets/xlsx.full.min.js
+          test -s app/src/main/assets/xlsx.full.min.js
+          node - <<'NODE'
+          const fs = require('fs');
+          const vm = require('vm');
+          const code = fs.readFileSync('app/src/main/assets/xlsx.full.min.js', 'utf8');
+          if (code.length < 100000) throw new Error('SheetJS file is unexpectedly small');
+          const context = { window: {} };
+          vm.createContext(context);
+          vm.runInContext(code, context, { timeout: 10000 });
+          if (typeof context.window.XLSX === 'undefined') throw new Error('SheetJS did not expose window.XLSX');
+          if (!context.window.XLSX.utils || typeof context.window.XLSX.read !== 'function' || typeof context.window.XLSX.write !== 'function') {
+            throw new Error('SheetJS XLSX API is incomplete');
+          }
+          console.log(`Verified local SheetJS build: ${code.length} bytes`);
+          NODE
+          if ! git diff --quiet -- app/src/main/assets/xlsx.full.min.js; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add app/src/main/assets/xlsx.full.min.js
+            git commit -m 'Vendor official SheetJS standalone build'
+            git push
+          fi
+      - name: Verify bundled SheetJS asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s app/src/main/assets/xlsx.full.min.js
+          grep -q 'SheetJS' app/src/main/assets/xlsx.full.min.js
+          grep -q 'window.XLSX' app/src/main/assets/xlsx.full.min.js
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
